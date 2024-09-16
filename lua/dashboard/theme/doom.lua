@@ -1,4 +1,4 @@
-local api = vim.api
+local api, keymap = vim.api, vim.keymap
 local utils = require('dashboard.utils')
 
 local function generate_center(config)
@@ -16,23 +16,19 @@ local function generate_center(config)
     if item.key then
       line = line .. (' '):rep(#item.key + 4)
       count = count + #item.key + 3
-      if type(item.action) == 'string' then
-        vim.keymap.set('n', item.key, function()
+      local desc = 'Dashboard-action: ' .. item.desc:gsub('^%s+', '')
+      keymap.set('n', item.key, function()
+        if type(item.action) == 'string' then
           local dump = loadstring(item.action)
           if not dump then
             vim.cmd(item.action)
           else
             dump()
           end
-        end, { buffer = config.bufnr, nowait = true, silent = true })
-      elseif type(item.action) == 'function' then
-        vim.keymap.set(
-          'n',
-          item.key,
-          item.action,
-          { buffer = config.bufnr, nowait = true, silent = true }
-        )
-      end
+        elseif type(item.action) == 'function' then
+          item.action()
+        end
+      end, { buffer = config.bufnr, nowait = true, silent = true, desc = desc })
     end
 
     if item.keymap then
@@ -108,6 +104,7 @@ local function generate_center(config)
 
   local line = api.nvim_buf_get_lines(config.bufnr, first_line, first_line + 1, false)[1]
   local col = line:find('%w')
+  local col_width = api.nvim_strwidth(line:sub(1, col))
   col = col and col - 1 or 9999
   api.nvim_win_set_cursor(config.winid, { first_line + 1, col })
 
@@ -120,6 +117,11 @@ local function generate_center(config)
     api.nvim_create_autocmd('CursorMoved', {
       buffer = config.bufnr,
       callback = function()
+        local buf = api.nvim_win_get_buf(0)
+        if vim.api.nvim_get_option_value('filetype', { buf = buf }) ~= 'dashboard' then
+          return
+        end
+
         local curline = api.nvim_win_get_cursor(0)[1]
         if curline < first_line + 1 then
           curline = bottom - 1
@@ -129,12 +131,21 @@ local function generate_center(config)
           curline = curline + (before > curline and -1 or 1)
         end
         before = curline
-        api.nvim_win_set_cursor(config.winid, { curline, col })
+
+        -- FIX: #422: In Lua the length of a string is the number of bytes not
+        -- the number of characters.
+        local curline_str = api.nvim_buf_get_lines(config.bufnr, curline - 1, curline, false)[1]
+        local strwidth = api.nvim_strwidth(curline_str:sub(1, col + 1))
+        local col_with_offset = col + col_width - strwidth
+        if col_with_offset < 0 then
+          col_with_offset = 0
+        end
+        api.nvim_win_set_cursor(config.winid, { curline, col_with_offset })
       end,
     })
   end, 0)
 
-  vim.keymap.set('n', config.confirm_key or '<CR>', function()
+  keymap.set('n', config.confirm_key or '<CR>', function()
     local curline = api.nvim_win_get_cursor(0)[1]
     local index = pos_map[curline - first_line]
     if index and config.center[index].action then
@@ -191,6 +202,8 @@ local function generate_footer(config)
   for i = 1, #footer do
     api.nvim_buf_add_highlight(config.bufnr, 0, 'DashboardFooter', first_line + i - 1, 0, -1)
   end
+
+  utils.add_update_footer_command(config.bufnr, footer)
 end
 
 ---@private

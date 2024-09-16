@@ -175,10 +175,13 @@ local function mru_list(config)
 
   if config.mru.cwd_only then
     local cwd = uv.cwd()
+    -- get separator from the first file
+    local sep = mlist[1]:match('[\\/]')
+    local cwd_with_sep = cwd:gsub('[\\/]', sep) .. sep
     mlist = vim.tbl_filter(function(file)
       local file_dir = vim.fn.fnamemodify(file, ':p:h')
-      if file_dir and cwd then
-        return file_dir:find(cwd, 1, true) == 1
+      if file_dir and cwd_with_sep then
+        return file_dir:sub(1, #cwd_with_sep) == cwd_with_sep
       end
     end, mlist)
   end
@@ -186,9 +189,11 @@ local function mru_list(config)
   for _, file in pairs(vim.list_slice(mlist, 1, config.mru.limit)) do
     local filename = vim.fn.fnamemodify(file, ':t')
     local icon, group = utils.get_icon(filename)
-    icon = icon or ' '
-    if not utils.is_win then
-      file = file:gsub(vim.env.HOME, '~')
+    icon = icon or ''
+    if config.mru.cwd_only then
+      file = vim.fn.fnamemodify(file, ':.')
+    elseif not utils.is_win then
+      file = vim.fn.fnamemodify(file, ':~')
     end
     file = icon .. ' ' .. file
     table.insert(groups, { #icon, group })
@@ -211,6 +216,7 @@ end
 local function letter_hotkey(config)
   -- Reserve j, k keys to move up and down.
   local list = { 106, 107 }
+  local shuffle = config.shuffle_letter
 
   for _, item in pairs(config.shortcut or {}) do
     if item.key then
@@ -229,7 +235,9 @@ local function letter_hotkey(config)
     end
   end
 
-  shuffle_table(unused_keys)
+  if shuffle then
+    shuffle_table(unused_keys)
+  end
 
   local unused_uppercase_keys = {}
   -- A - Z
@@ -239,7 +247,9 @@ local function letter_hotkey(config)
     end
   end
 
-  shuffle_table(unused_uppercase_keys)
+  if shuffle then
+    shuffle_table(unused_uppercase_keys)
+  end
 
   -- Push shuffled uppercase keys after the lowercase ones
   for _, key in pairs(unused_uppercase_keys) do
@@ -280,10 +290,20 @@ local function map_key(config, key, content)
   keymap.set('n', key, function()
     local text = content or api.nvim_get_current_line()
     local scol = utils.is_win and text:find('%w') or text:find('%p')
-    text = text:sub(scol)
-    local path = text:sub(1, text:find('%w(%s+)$'))
-    path = vim.fs.normalize(path)
-    if vim.fn.isdirectory(path) == 1 then
+    local path = nil
+
+    if scol ~= nil then -- scol == nil if pressing enter in empty space
+      if text:sub(scol, scol + 1) ~= '~/' then -- is relative path
+        scol = math.min(text:find('%w'), text:find('%p'))
+      end
+      text = text:sub(scol)
+      path = text:sub(1, text:find('%w(%s+)$'))
+      path = vim.fs.normalize(path)
+    end
+
+    if path == nil then
+      vim.cmd('enew')
+    elseif vim.fn.isdirectory(path) == 1 then
       vim.cmd('lcd ' .. path)
       if type(config.project.action) == 'function' then
         config.project.action(path)
@@ -296,7 +316,7 @@ local function map_key(config, key, content)
         end
       end
     else
-      vim.cmd('edit ' .. path)
+      vim.cmd('edit ' .. vim.fn.fnameescape(path))
       local root = utils.get_vcs_root()
       if not config.change_to_vcs_root then
         return
@@ -390,14 +410,16 @@ local function gen_center(plist, config)
 
   for i, data in pairs(mgroups) do
     local len, group = unpack(data)
-    api.nvim_buf_add_highlight(
-      config.bufnr,
-      0,
-      group,
-      first_line + i + plist_len,
-      start_col,
-      start_col + len
-    )
+    if group then
+      api.nvim_buf_add_highlight(
+        config.bufnr,
+        0,
+        group,
+        first_line + i + plist_len,
+        start_col,
+        start_col + len
+      )
+    end
     api.nvim_buf_add_highlight(
       config.bufnr,
       0,
@@ -448,6 +470,8 @@ local function gen_footer(config)
   for i, _ in pairs(footer) do
     api.nvim_buf_add_highlight(config.bufnr, 0, 'DashboardFooter', first_line + i - 1, 0, -1)
   end
+
+  utils.add_update_footer_command(config.bufnr, footer)
 end
 
 local function project_delete()
@@ -486,7 +510,9 @@ local function theme_instance(config)
       utils.disable_move_key(config.bufnr)
     end
     require('dashboard.theme.header').generate_header(config)
-    gen_shortcut(config)
+    if not config.shortcut or not vim.tbl_isempty(config.shortcut) then
+      gen_shortcut(config)
+    end
     load_packages(config)
     gen_center(plist, config)
     gen_footer(config)
